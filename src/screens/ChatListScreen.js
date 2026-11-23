@@ -1,0 +1,452 @@
+import React, { useState, useMemo, useCallback } from 'react';
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  TextInput,
+  StyleSheet,
+  ActivityIndicator,
+  RefreshControl,
+  Platform,
+} from 'react-native';
+import SafeAreaView from '../components/ScreenSafeArea';
+import { useIsFocused, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../context/AuthContext';
+import { useAppTheme, useThemedStyles } from '../context/ThemeContext';
+import { useConversations, useUsers } from '../api/hooks';
+import AppleAvatar from '../components/AppleAvatar';
+import { conversationTitle } from '../utils/messageHistory';
+
+export default function ChatListScreen() {
+  const { colors } = useAppTheme();
+  const styles = useThemedStyles(createStyles);
+  const { user, capabilities } = useAuth();
+  const router = useRouter();
+  const isFocused = useIsFocused();
+  const [searchQuery, setSearchQuery] = useState('');
+  const {
+    data: conversations,
+    isLoading,
+    isRefetching,
+    refetch,
+    error,
+  } = useConversations({ refetchInterval: isFocused ? 5000 : false });
+
+  const { data: users } = useUsers();
+
+  // Create an id -> name lookup map
+  const userMap = useMemo(() => {
+    const map = new Map();
+    if (users) {
+      for (const u of users) {
+        map.set(u.id, u.name);
+      }
+    }
+    return map;
+  }, [users]);
+
+  const getConversationTitle = useCallback((item) => {
+    return conversationTitle(item, user?.id || '', userMap);
+  }, [userMap, user?.id]);
+
+  const formatAppleDate = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return '';
+    const now = new Date();
+    const isToday =
+      date.getDate() === now.getDate() &&
+      date.getMonth() === now.getMonth() &&
+      date.getFullYear() === now.getFullYear();
+
+    if (isToday) {
+      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday =
+      date.getDate() === yesterday.getDate() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getFullYear() === yesterday.getFullYear();
+
+    if (isYesterday) return 'Yesterday';
+
+    const diffDays = Math.round((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays < 7) {
+      return date.toLocaleDateString([], { weekday: 'short' });
+    }
+
+    return date.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: '2-digit' });
+  };
+
+  const filteredConversations = useMemo(() => {
+    if (!conversations) return [];
+    const ordered = [...conversations].sort((a, b) =>
+      Date.parse(b.lastMessageAt || b.createdAt) - Date.parse(a.lastMessageAt || a.createdAt) || b.id.localeCompare(a.id)
+    );
+    if (!searchQuery.trim()) return ordered;
+    const query = searchQuery.toLowerCase();
+    return ordered.filter((item) => {
+      const title = getConversationTitle(item).toLowerCase();
+      return title.includes(query);
+    });
+  }, [conversations, searchQuery, getConversationTitle]);
+
+  const renderConversationItem = ({ item }) => {
+    const title = getConversationTitle(item);
+    const isDm = item.type === 'DM';
+    const dateStr = formatAppleDate(item.lastMessageAt || item.createdAt);
+    const memberCount = item.participants_ids?.length || 0;
+
+    return (
+      <TouchableOpacity
+        style={styles.chatRow}
+        activeOpacity={0.7}
+        onPress={() =>
+          router.push({ pathname: '/chat/[conversationId]', params: { conversationId: item.id } })
+        }
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${title}`}
+      >
+        {/* Apple Avatar */}
+        <AppleAvatar
+          name={title}
+          size={48}
+          isGroup={!isDm}
+          memberCount={memberCount}
+        />
+
+        {/* Content & Apple styled right edge */}
+        <View style={styles.chatContentContainer}>
+          <View style={styles.chatHeaderRow}>
+            <Text style={styles.chatTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <View style={styles.timeChevronRow}>
+              <Text style={styles.chatTime}>{dateStr}</Text>
+              <Ionicons
+                name="chevron-forward"
+                size={14}
+                color={colors.secondaryText}
+                style={styles.chevron}
+              />
+            </View>
+          </View>
+
+          <Text style={styles.chatSubtitle} numberOfLines={2}>
+            {item.lastMessagePreview || (isDm ? 'Direct message' : `${memberCount} people`)}
+          </Text>
+          {capabilities.conversationSummary && item.unreadCount > 0 && <Text style={styles.unreadBadge}>{item.unreadCount} unread</Text>}
+
+          {/* Inset Hairline Separator */}
+          <View style={styles.separator} />
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <View style={styles.container}>
+        {/* Top iOS Navigation Bar */}
+        <View style={styles.topNav}>
+          <View />
+          <TouchableOpacity
+            style={styles.composeBtn}
+            onPress={() => router.push('/new-chat')}
+            accessibilityRole="button"
+            accessibilityLabel="New message"
+          >
+            <Ionicons name="create-outline" size={24} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Large iOS Header Title */}
+        <View style={styles.largeTitleContainer}>
+          <Text style={styles.largeTitle}>Messages</Text>
+        </View>
+
+        {/* Apple Capsule Search Bar */}
+        <View style={styles.searchSection}>
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={17} color={colors.secondaryText} style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search"
+              placeholderTextColor={colors.placeholder}
+              clearButtonMode="while-editing"
+              returnKeyType="search"
+            />
+            {searchQuery.length > 0 ? (
+              <TouchableOpacity
+                onPress={() => setSearchQuery('')}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="close-circle" size={18} color={colors.secondaryText} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+
+        {error && conversations && <View style={styles.offlineBanner} accessibilityRole="alert">
+          <Text style={styles.offlineText}>Could not refresh. Your cached chats are still available.</Text>
+          <TouchableOpacity onPress={() => refetch()} accessibilityRole="button"><Text style={styles.retryBtnText}>Retry</Text></TouchableOpacity>
+        </View>}
+
+        {/* Main Content List */}
+        {isLoading && !conversations ? (
+          <View style={styles.centerContainer}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading Messages...</Text>
+          </View>
+        ) : error && !conversations ? (
+          <View style={styles.centerContainer}>
+            <Ionicons name="alert-circle" size={48} color={colors.danger} />
+            <Text style={styles.errorTitle}>Messages Unavailable</Text>
+            <Text style={styles.errorMessage}>{error.message}</Text>
+            <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
+              <Text style={styles.retryBtnText}>Try Again</Text>
+            </TouchableOpacity>
+          </View>
+        ) : filteredConversations.length === 0 ? (
+          <View style={styles.centerContainer}>
+            <View style={styles.emptyIconCircle}>
+              <Ionicons name="chatbubble-ellipses" size={40} color={colors.primary} />
+            </View>
+            <Text style={styles.emptyTitle}>No Messages</Text>
+            <Text style={styles.emptySubtitle}>
+              Send a message to get the conversation started.
+            </Text>
+            <TouchableOpacity
+              style={styles.newChatAppleBtn}
+              onPress={() => router.push('/new-chat')}
+            >
+              <Text style={styles.newChatAppleBtnText}>New Message</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <FlatList
+            data={filteredConversations}
+            keyExtractor={(item) => item.id}
+            renderItem={renderConversationItem}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefetching}
+                onRefresh={refetch}
+                tintColor={colors.primary}
+                colors={[colors.primary]}
+              />
+            }
+          />
+        )}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const createStyles = (colors) => StyleSheet.create({
+  offlineBanner: { marginHorizontal: 16, marginBottom: 8, padding: 12, backgroundColor: colors.dangerSoft, borderRadius: 10, gap: 8 },
+  offlineText: { color: colors.danger, fontSize: 13, lineHeight: 18 },
+  unreadBadge: { color: colors.primary, fontSize: 12, fontWeight: '600', marginTop: 3 },
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  topNav: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'android' ? 12 : 4,
+    paddingBottom: 4,
+  },
+  navActionText: {
+    fontSize: 17,
+    color: colors.primary,
+    letterSpacing: -0.4,
+  },
+  editBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  composeBtn: {
+    padding: 4,
+  },
+  largeTitleContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  largeTitle: {
+    fontSize: 34,
+    fontWeight: '700',
+    color: colors.text,
+    letterSpacing: -0.6,
+  },
+  searchSection: {
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.input,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    height: 36,
+  },
+  searchIcon: {
+    marginRight: 6,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: colors.text,
+    letterSpacing: -0.3,
+    paddingVertical: 0,
+  },
+  micIcon: {
+    marginLeft: 6,
+  },
+  listContent: {
+    paddingBottom: 24,
+  },
+  chatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.background,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  chatContentContainer: {
+    flex: 1,
+    marginLeft: 12,
+    position: 'relative',
+    paddingBottom: 11,
+    justifyContent: 'center',
+  },
+  chatHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  chatTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    letterSpacing: -0.2,
+    flex: 1,
+    marginRight: 8,
+  },
+  timeChevronRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  chatTime: {
+    fontSize: 14,
+    color: colors.secondaryText,
+    letterSpacing: -0.2,
+  },
+  chevron: {
+    marginLeft: 4,
+  },
+  chatSubtitle: {
+    fontSize: 14,
+    color: colors.secondaryText,
+    lineHeight: 18,
+    letterSpacing: -0.2,
+    marginTop: 1,
+    marginRight: 8,
+  },
+  separator: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.separator,
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 15,
+    color: colors.secondaryText,
+  },
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text,
+    marginTop: 12,
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: colors.secondaryText,
+    textAlign: 'center',
+    marginTop: 6,
+    lineHeight: 19,
+  },
+  retryBtn: {
+    marginTop: 18,
+    paddingVertical: 8,
+    paddingHorizontal: 20,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 16,
+  },
+  retryBtnText: {
+    color: colors.primary,
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  emptyIconCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: colors.primarySoft,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 6,
+  },
+  emptySubtitle: {
+    fontSize: 15,
+    color: colors.secondaryText,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  newChatAppleBtn: {
+    backgroundColor: colors.outgoingBubble,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 22,
+  },
+  newChatAppleBtnText: {
+    color: colors.onPrimary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+});

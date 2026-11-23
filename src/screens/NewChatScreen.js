@@ -1,0 +1,522 @@
+import React, { useState, useMemo, useRef } from 'react';
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  TextInput,
+  StyleSheet,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import SafeAreaView from '../components/ScreenSafeArea';
+import { useRouter } from 'expo-router';
+import { useHeaderHeight } from 'expo-router/react-navigation';
+import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../context/AuthContext';
+import { useAppTheme, useThemedStyles } from '../context/ThemeContext';
+import { useUsers, useCreateConversation, isCurrentSession } from '../api/hooks';
+import AppleAvatar from '../components/AppleAvatar';
+
+export default function NewChatScreen() {
+  const { colors } = useAppTheme();
+  const styles = useThemedStyles(createStyles);
+  const { user, sessionConfig } = useAuth();
+  const router = useRouter();
+  const headerHeight = useHeaderHeight();
+  const { data: users, isLoading, error, refetch } = useUsers();
+  const { mutate: createConversation, isPending: isCreating } = useCreateConversation();
+
+  const [mode, setMode] = useState('DM'); // 'DM' | 'GROUP'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [groupName, setGroupName] = useState('');
+  const [createError, setCreateError] = useState('');
+  const creating = useRef(false);
+
+  const openConversation = (conversation) => {
+    creating.current = false;
+    if (isCurrentSession(sessionConfig)) router.replace({ pathname: '/chat/[conversationId]', params: { conversationId: conversation.id } });
+  };
+  const showCreateError = (err) => {
+    creating.current = false;
+    if (isCurrentSession(sessionConfig)) setCreateError(err.message || 'Could not start this conversation.');
+  };
+
+  // Exclude current user from the selectable list
+  const availableUsers = useMemo(() => {
+    return (users || []).filter((u) => u.id !== user?.id);
+  }, [users, user?.id]);
+
+  const filteredUsers = useMemo(() => {
+    if (!searchQuery.trim()) return availableUsers;
+    const query = searchQuery.toLowerCase();
+    return availableUsers.filter((u) =>
+      u.name.toLowerCase().includes(query)
+    );
+  }, [availableUsers, searchQuery]);
+
+  const handleStartDM = (targetUser) => {
+    if (isCreating || creating.current) return;
+    creating.current = true;
+    setCreateError('');
+
+    createConversation(
+      {
+        type: 'DM',
+        participants_ids: [targetUser.id],
+      },
+      {
+        onSuccess: openConversation,
+        onError: showCreateError,
+      }
+    );
+  };
+
+  const handleToggleUserSelection = (userId) => {
+    if (selectedUserIds.includes(userId)) {
+      setSelectedUserIds(selectedUserIds.filter((id) => id !== userId));
+    } else {
+      setSelectedUserIds([...selectedUserIds, userId]);
+    }
+  };
+
+  const handleRemoveChip = (userId) => {
+    setSelectedUserIds(selectedUserIds.filter((id) => id !== userId));
+  };
+
+  const handleCreateGroup = () => {
+    if (isCreating || creating.current) return;
+    if (selectedUserIds.length === 0) {
+      setCreateError('Please select at least one person for the group.');
+      return;
+    }
+    if (!groupName.trim()) {
+      setCreateError('Please enter a name for this group chat.');
+      return;
+    }
+
+    creating.current = true;
+    setCreateError('');
+    createConversation(
+      {
+        type: 'GROUP',
+        name: groupName.trim(),
+        participants_ids: selectedUserIds,
+      },
+      {
+        onSuccess: openConversation,
+        onError: showCreateError,
+      }
+    );
+  };
+
+  const renderUserItem = ({ item }) => {
+    const isSelected = selectedUserIds.includes(item.id);
+
+    return (
+      <TouchableOpacity
+        style={styles.userRow}
+        activeOpacity={0.7}
+        disabled={isCreating}
+        accessibilityRole="button"
+        accessibilityLabel={`${mode === 'DM' ? 'Message' : 'Select'} ${item.name}`}
+        onPress={() => {
+          if (mode === 'DM') {
+            handleStartDM(item);
+          } else {
+            handleToggleUserSelection(item.id);
+          }
+        }}
+      >
+        <AppleAvatar name={item.name} size={44} />
+
+        <View style={styles.userInfoCol}>
+          <Text style={styles.userName}>{item.name}</Text>
+          {item.bio ? <Text style={styles.userBio}>{item.bio}</Text> : null}
+          <View style={styles.separator} />
+        </View>
+
+        <View style={styles.actionCol}>
+          {mode === 'DM' ? (
+            <Ionicons name="chatbubble" size={18} color={colors.primary} />
+          ) : (
+            <View
+              style={[
+                styles.checkboxCircle,
+                isSelected && styles.checkboxCircleSelected,
+              ]}
+            >
+              {isSelected && (
+                <Ionicons name="checkmark" size={14} color={colors.onPrimary} />
+              )}
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['left', 'right', 'bottom']}>
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'web' ? undefined : 'padding'} keyboardVerticalOffset={headerHeight}>
+        {/* Apple Segmented Control */}
+        <View style={styles.segmentContainer}>
+          <View style={styles.segmentedControl}>
+            <TouchableOpacity
+              style={[
+                styles.segmentTab,
+                mode === 'DM' && styles.segmentTabActive,
+              ]}
+              onPress={() => { setMode('DM'); setCreateError(''); }}
+              disabled={isCreating}
+              accessibilityRole="button"
+              accessibilityLabel="Direct Message"
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  mode === 'DM' && styles.segmentTextActive,
+                ]}
+              >
+                Direct Message
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.segmentTab,
+                mode === 'GROUP' && styles.segmentTabActive,
+              ]}
+              onPress={() => { setMode('GROUP'); setCreateError(''); }}
+              disabled={isCreating}
+              accessibilityRole="button"
+              accessibilityLabel="Group Message"
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  mode === 'GROUP' && styles.segmentTextActive,
+                ]}
+              >
+                Group Chat
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Group Name input if GROUP mode */}
+        {mode === 'GROUP' && (
+          <View style={styles.groupHeaderBar}>
+            <TextInput
+              style={styles.groupNameInput}
+              value={groupName}
+              onChangeText={setGroupName}
+              placeholder="Group Name (e.g. Project Team)"
+              placeholderTextColor={colors.placeholder}
+              maxLength={100}
+              accessibilityLabel="Group name"
+            />
+            <TouchableOpacity
+              style={[
+                styles.createGroupAppleBtn,
+                (selectedUserIds.length === 0 || !groupName.trim() || isCreating) &&
+                  styles.createGroupAppleBtnDisabled,
+              ]}
+              onPress={handleCreateGroup}
+              disabled={selectedUserIds.length === 0 || !groupName.trim() || isCreating}
+              accessibilityRole="button"
+              accessibilityLabel="Create Group"
+            >
+              {isCreating ? (
+                <ActivityIndicator color={colors.onPrimary} size="small" />
+              ) : (
+                <Text style={styles.createGroupAppleBtnText}>
+                  Create ({selectedUserIds.length})
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Apple "To:" Header Line */}
+        <View style={styles.toBarContainer}>
+          <Text style={styles.toLabel}>To:</Text>
+
+          {/* Selected chips in group mode */}
+          {mode === 'GROUP' && selectedUserIds.length > 0 && (
+            <View style={styles.chipsRow}>
+              {selectedUserIds.map((id) => {
+                const u = availableUsers.find((userItem) => userItem.id === id);
+                return (
+                  <TouchableOpacity
+                    key={id}
+                    style={styles.contactChip}
+                    onPress={() => handleRemoveChip(id)}
+                    disabled={isCreating}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${u?.name || 'contact'}`}
+                  >
+                    <Text style={styles.contactChipText}>{u?.name || 'User'}</Text>
+                    <Ionicons name="close-circle" size={14} color={colors.primary} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
+          <TextInput
+            style={styles.toTextInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder={selectedUserIds.length === 0 ? 'Search name' : ''}
+            placeholderTextColor={colors.placeholder}
+            autoCapitalize="none"
+            editable={!isCreating}
+            accessibilityLabel="Search contacts"
+          />
+        </View>
+
+        {!!(createError || error && users) && <View style={styles.errorBanner} accessibilityRole="alert">
+          <Text style={styles.errorText}>{createError || 'Could not refresh contacts. Cached contacts remain available.'}</Text>
+        </View>}
+
+        {/* User list */}
+        {isLoading || isCreating ? (
+          <View style={styles.centerContainer}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={styles.loadingText}>
+              {isCreating ? 'Creating iMessage...' : 'Loading contacts...'}
+            </Text>
+          </View>
+        ) : error && !users ? (
+          <View style={styles.centerContainer}>
+            <Ionicons name="alert-circle-outline" size={38} color={colors.danger} />
+            <Text style={styles.errorText}>{error.message}</Text>
+            <TouchableOpacity style={styles.retryBtn} onPress={() => refetch()}>
+              <Text style={styles.retryBtnText}>Try Again</Text>
+            </TouchableOpacity>
+          </View>
+        ) : filteredUsers.length === 0 ? (
+          <View style={styles.centerContainer}>
+            <Text style={styles.emptyText}>No registered contacts found.</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={filteredUsers}
+            keyExtractor={(item) => item.id}
+            renderItem={renderUserItem}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          />
+        )}
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const createStyles = (colors) => StyleSheet.create({
+  errorBanner: { marginHorizontal: 16, marginVertical: 8, padding: 12, borderRadius: 10, backgroundColor: colors.dangerSoft },
+  safeArea: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  segmentContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: colors.background,
+  },
+  segmentedControl: {
+    flexDirection: 'row',
+    backgroundColor: colors.input,
+    borderRadius: 9,
+    padding: 2,
+    height: 32,
+  },
+  segmentTab: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 7,
+  },
+  segmentTabActive: {
+    backgroundColor: colors.surface,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.12,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  segmentText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.text,
+    letterSpacing: -0.2,
+  },
+  segmentTextActive: {
+    fontWeight: '600',
+    color: colors.text,
+  },
+  groupHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    gap: 8,
+  },
+  groupNameInput: {
+    flex: 1,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    fontSize: 15,
+    color: colors.text,
+  },
+  createGroupAppleBtn: {
+    backgroundColor: colors.outgoingBubble,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+  },
+  createGroupAppleBtnDisabled: {
+    backgroundColor: colors.surfaceMuted,
+    opacity: 0.55,
+  },
+  createGroupAppleBtnText: {
+    color: colors.onPrimary,
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  toBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  toLabel: {
+    fontSize: 16,
+    color: colors.secondaryText,
+    marginRight: 4,
+  },
+  chipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  contactChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  contactChipText: {
+    fontSize: 13,
+    color: colors.primary,
+    fontWeight: '500',
+  },
+  toTextInput: {
+    flex: 1,
+    fontSize: 16,
+    color: colors.text,
+    minWidth: 100,
+    paddingVertical: 0,
+  },
+  listContent: {
+    paddingVertical: 4,
+  },
+  userRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 16,
+    paddingRight: 16,
+    paddingTop: 10,
+  },
+  userInfoCol: {
+    flex: 1,
+    marginLeft: 12,
+    position: 'relative',
+    paddingBottom: 10,
+  },
+  userName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    letterSpacing: -0.3,
+  },
+  userBio: {
+    fontSize: 13,
+    color: colors.secondaryText,
+    marginTop: 2,
+  },
+  separator: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: -16,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.separator,
+  },
+  actionCol: {
+    paddingLeft: 8,
+    paddingBottom: 8,
+  },
+  checkboxCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxCircleSelected: {
+    backgroundColor: colors.outgoingBubble,
+    borderColor: colors.outgoingBubble,
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 14,
+    color: colors.secondaryText,
+  },
+  errorText: {
+    fontSize: 14,
+    color: colors.danger,
+    textAlign: 'center',
+  },
+  retryBtn: {
+    marginTop: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 12,
+  },
+  retryBtnText: {
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  emptyText: {
+    fontSize: 15,
+    color: colors.secondaryText,
+  },
+});
