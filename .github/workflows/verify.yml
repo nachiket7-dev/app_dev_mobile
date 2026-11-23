@@ -1,0 +1,66 @@
+name: Verify Submission
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: '1'
+      NODE_ENV: test
+      MONGO_USERNAME: ci_test_admin
+      MONGO_PASSWORD: 7f46683e9718462b941a115a3a38b03c
+      MONGO_DATABASE: test_ci
+      MONGO_PORT: '27027'
+      API_PORT: '3100'
+      ALLOW_INSECURE_LOCAL_HTTP: 'true'
+      CORS_ORIGINS: http://localhost:8081,http://127.0.0.1:8081
+      DATABASE_URL: mongodb://ci_test_admin:7f46683e9718462b941a115a3a38b03c@127.0.0.1:27027/test_ci?authSource=admin&replicaSet=rs0&directConnection=true
+      TEST_DATABASE_URL: mongodb://ci_test_admin:7f46683e9718462b941a115a3a38b03c@127.0.0.1:27027/test_ci_integration?authSource=admin&replicaSet=rs0&directConnection=true
+      E2E_API_URL: http://127.0.0.1:3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+      - run: npm ci
+      - run: npm --prefix backend ci
+      - run: npm --prefix backend run prisma:generate
+      - run: npx --no-install expo install --check
+      - run: npx --yes expo-doctor
+      - run: npm run verify
+      - run: npm --prefix backend run build
+      - name: Start disposable replica set, provision indexes, and start API
+        run: docker compose -p campus-chat-ci -f backend/docker-compose.yml up --build --wait --wait-timeout 180
+      - run: npm --prefix backend run test:integration
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:web
+      - run: npm run export:all
+      - name: Verify exported production app against the real API
+        run: E2E_PRODUCTION=1 npm run test:web
+      - name: Verify production HTML entry
+        run: node -e "require('node:fs').accessSync('dist/app/index.html')"
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: submission-verification
+          if-no-files-found: ignore
+          path: |
+            playwright-report
+            test-results
+            dist/app
+      - name: Clean only disposable CI resources
+        if: always()
+        run: docker compose -p campus-chat-ci -f backend/docker-compose.yml down --volumes
