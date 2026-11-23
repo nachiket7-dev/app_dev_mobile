@@ -1,0 +1,92 @@
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${MONGO_PORT:-27017}:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:?Set MONGO_USERNAME in backend/.env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set a generated MONGO_PASSWORD in backend/.env}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-chatapp}
+      MONGO_SILENT_LOGS: ${MONGO_SILENT_LOGS:-true}
+    entrypoint:
+      - bash
+      - -c
+      - |
+        if [ "$${MONGO_SILENT_LOGS:-true}" = "true" ]; then
+          exec >/dev/null 2>&1
+        fi
+        if [ ! -f /data/key/keyfile ]; then
+          mkdir -p /data/key
+          openssl rand -base64 756 > /data/key/keyfile
+          chmod 400 /data/key/keyfile
+          chown -R mongodb:mongodb /data/key
+        fi
+        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /data/key/keyfile --bind_ip_all
+    volumes:
+      - mongo_data:/data/db
+      - mongo_key:/data/key
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --username "$${MONGO_INITDB_ROOT_USERNAME}"
+          --password "$${MONGO_INITDB_ROOT_PASSWORD}" --authenticationDatabase admin
+          --eval 'try { rs.status() } catch(e) { if (e.code === 94) rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }); else throw e } if (!db.hello().isWritablePrimary) quit(1)'
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+
+  provision:
+    build:
+      context: .
+      target: provisioning
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: 'mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@mongo:27017/${MONGO_DATABASE:-chatapp}?authSource=admin&replicaSet=rs0&directConnection=true'
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build:
+      context: .
+      target: production
+    restart: unless-stopped
+    ports:
+      - '${API_BIND_HOST:-127.0.0.1}:${API_PORT:-3000}:3000'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: 'mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@mongo:27017/${MONGO_DATABASE:-chatapp}?authSource=admin&replicaSet=rs0&directConnection=true'
+      PORT: '3000'
+      BIND_HOST: '0.0.0.0'
+      NODE_ENV: '${NODE_ENV:-development}'
+      ALLOW_INSECURE_LOCAL_HTTP: '${ALLOW_INSECURE_LOCAL_HTTP:-true}'
+      CORS_ORIGINS: '${CORS_ORIGINS:-http://localhost:8081,http://127.0.0.1:8081}'
+      TRUST_PROXY_HOPS: '${TRUST_PROXY_HOPS:-0}'
+      BOT_MODE: '${BOT_MODE:-false}'
+    depends_on:
+      mongo:
+        condition: service_healthy
+      provision:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(async response => { if (!response.ok || (await response.json()).status !== 'ok') process.exit(1); }).catch(() => process.exit(1));"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  mongo_data:
+  mongo_key:
