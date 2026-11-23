@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './src/context/AuthContext';
 import { ThemeProvider, useAppTheme } from './src/context/ThemeContext';
 import { MessageOutboxProvider } from './src/context/MessageOutboxContext';
+import { usePushNotifications } from './src/hooks/usePushNotifications';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -17,6 +18,7 @@ const queryClient = new QueryClient({
 });
 
 function AppContent({ children }) {
+  usePushNotifications();
   const { colors, isDark } = useAppTheme();
   const navigationTheme = useMemo(() => {
     const baseTheme = isDark ? DarkTheme : DefaultTheme;
